@@ -1,144 +1,95 @@
-/* eslint-disable react/no-unknown-property */
+import { useRef, useState, useEffect } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { forwardRef, useRef, useMemo, useLayoutEffect, Suspense } from "react";
-import { Color } from "three";
-
-const hexToNormalizedRGB = (hex) => {
-  hex = hex.replace("#", "");
-  return [
-    parseInt(hex.slice(0, 2), 16) / 255,
-    parseInt(hex.slice(2, 4), 16) / 255,
-    parseInt(hex.slice(4, 6), 16) / 255,
-  ];
-};
+import * as THREE from "three";
 
 const vertexShader = `
-varying vec2 vUv;
-varying vec3 vPosition;
-
-void main() {
-  vPosition = position;
-  vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-}
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
 `;
 
 const fragmentShader = `
-varying vec2 vUv;
-varying vec3 vPosition;
+  uniform float time;
+  uniform vec2 resolution;
+  varying vec2 vUv;
 
-uniform float uTime;
-uniform vec3  uColor;
-uniform float uSpeed;
-uniform float uScale;
-uniform float uRotation;
-uniform float uNoiseIntensity;
+  float noise(vec2 p) {
+    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+  }
 
-const float e = 2.71828182845904523536;
+  void main() {
+    vec2 uv = gl_FragCoord.xy / resolution.xy;
+    float t = time * 0.1; // Slowed down animation
+    
+    // Create base pattern
+    float pattern = 0.0;
+    for(float i = 1.0; i < 4.0; i++) {
+      vec2 offset = vec2(
+        sin(t * 0.3 * i) * 0.3,
+        cos(t * 0.2 * i) * 0.3
+      );
+      pattern += noise(uv * (2.0 * i) + offset + t) / i;
+    }
+    
+    // Darker purple gradient
+    vec3 darkPurple = vec3(0.05, 0.0, 0.1); // Almost black
+    vec3 purple = vec3(0.2, 0.0, 0.4); // Deep purple
+    vec3 color = mix(darkPurple, purple, pattern * 0.5); // Reduced intensity
+    
+    // Add very subtle highlights
+    float highlight = smoothstep(0.8, 0.95, pattern);
+    color = mix(color, vec3(0.3, 0.1, 0.5), highlight * 0.2);
+    
+    // Strong vignette effect
+    float vignette = 1.0 - length((uv - 0.5) * 1.8);
+    color *= smoothstep(0.0, 0.5, vignette);
 
-float noise(vec2 texCoord) {
-  float G = e;
-  vec2  r = (G * sin(G * texCoord));
-  return fract(r.x * r.y * (1.0 + texCoord.x));
-}
+    // Add noise texture
+    float noise = noise(uv * 100.0 + time) * 0.02;
+    color += noise;
 
-vec2 rotateUvs(vec2 uv, float angle) {
-  float c = cos(angle);
-  float s = sin(angle);
-  mat2  rot = mat2(c, -s, s, c);
-  return rot * uv;
-}
-
-void main() {
-  float rnd        = noise(gl_FragCoord.xy);
-  vec2  uv         = rotateUvs(vUv * uScale, uRotation);
-  vec2  tex        = uv * uScale;
-  float tOffset    = uSpeed * uTime;
-
-  tex.y += 0.03 * sin(8.0 * tex.x - tOffset);
-
-  float pattern = 0.6 +
-                  0.4 * sin(5.0 * (tex.x + tex.y +
-                                   cos(3.0 * tex.x + 5.0 * tex.y) +
-                                   0.02 * tOffset) +
-                           sin(20.0 * (tex.x + tex.y - 0.1 * tOffset)));
-
-  vec4 col = vec4(uColor, 1.0) * vec4(pattern) - rnd / 15.0 * uNoiseIntensity;
-  col.a = 1.0;
-  gl_FragColor = col;
-}
+    gl_FragColor = vec4(color, 1.0);
+  }
 `;
 
-const SilkPlane = forwardRef(function SilkPlane({ uniforms }, ref) {
-  const { viewport } = useThree();
+function Scene() {
+  const mesh = useRef<THREE.Mesh>();
+  const { viewport, size } = useThree();
+  const [uniforms] = useState({
+    time: { value: 0 },
+    resolution: { value: new THREE.Vector2() }
+  });
 
-  useLayoutEffect(() => {
-    if (ref.current) {
-      ref.current.scale.set(viewport.width, viewport.height, 1);
-    }
-  }, [ref, viewport]);
+  useEffect(() => {
+    uniforms.resolution.value.set(size.width, size.height);
+  }, [size, uniforms.resolution]);
 
-  useFrame((_, delta) => {
-    if (ref.current && ref.current.material && ref.current.material.uniforms) {
-      ref.current.material.uniforms.uTime.value += 0.1 * delta;
+  useFrame((state) => {
+    if (mesh.current) {
+      uniforms.time.value = state.clock.getElapsedTime();
     }
   });
 
   return (
-    <mesh ref={ref}>
-      <planeGeometry args={[1, 1, 1, 1]} />
+    <mesh ref={mesh} scale={[viewport.width, viewport.height, 1]}>
+      <planeGeometry args={[1, 1]} />
       <shaderMaterial
-        uniforms={uniforms}
         vertexShader={vertexShader}
         fragmentShader={fragmentShader}
+        uniforms={uniforms}
       />
     </mesh>
   );
-});
-SilkPlane.displayName = "SilkPlane";
+}
 
-const Silk = ({
-  speed = 5,
-  scale = 1,
-  color = "#8B5CF6",
-  noiseIntensity = 1.5,
-  rotation = 0,
-}) => {
-  const meshRef = useRef();
-
-  const uniforms = useMemo(
-    () => ({
-      uSpeed: { value: speed },
-      uScale: { value: scale },
-      uNoiseIntensity: { value: noiseIntensity },
-      uColor: { value: new Color(...hexToNormalizedRGB(color)) },
-      uRotation: { value: rotation },
-      uTime: { value: 0 },
-    }),
-    [speed, scale, noiseIntensity, color, rotation]
-  );
-
+export default function Silk() {
   return (
-    <Canvas 
-      dpr={[1, 2]} 
-      frameloop="always"
-      style={{ 
-        width: '100%', 
-        height: '100%',
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        zIndex: -1
-      }}
-      onCreated={(state) => {
-        state.gl.setClearColor('#000000', 0);
-      }}
-    >
-      <Suspense fallback={null}>
-        <SilkPlane ref={meshRef} uniforms={uniforms} />
-      </Suspense>
-    </Canvas>
+    <div className="fixed top-0 left-0 w-full h-full -z-10">
+      <Canvas camera={{ position: [0, 0, 1] }}>
+        <Scene />
+      </Canvas>
+    </div>
   );
-};
-
-export default Silk; 
+} 
